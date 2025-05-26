@@ -54,6 +54,29 @@ qorca provides a single command-line executable with extensive configuration opt
    export PATH=$PATH:/path/to/qorca
    ```
 
+### Customizing ORCA Installation Paths
+
+Before using qorca, you need to adjust the paths to your ORCA installation in the script. Open the `qorca` file in a text editor and modify the `ORCA_VERSIONS` dictionary near the top of the file:
+
+```python
+ORCA_VERSIONS = {
+    '5.0.4': {
+        'module_loads': ['module load gnu9/9.4.0', 'module load openmpi4/4.1.1', 'module load orca/5.0.4'],
+        'orca_executable': '/opt/ohpc/pub/apps/orca/5.0.4/orca',
+    },
+    '6.0.0': {
+        'module_loads': ['module load gnu12/12.3.0', 'module load openmpi4/4.1.6'],
+        'orca_executable': '/path/to/your/orca_6_0_0/orca',
+    },
+    '6.0.1': {
+        'module_loads': ['module load gnu12/12.3.0', 'module load openmpi4/4.1.6'],
+        'orca_executable': '/path/to/your/orca_6_0_1/orca',
+    },
+}
+```
+
+Adjust both the `module_loads` list and the `orca_executable` path for each ORCA version to match your cluster's configuration. You can also add additional ORCA versions as needed.
+
 ## Usage
 
 Run the executable with the following syntax:
