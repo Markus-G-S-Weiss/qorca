@@ -4,9 +4,9 @@
 [![GitHub top language](https://img.shields.io/github/languages/top/Markus-G-S-Weiss/qorca.svg)]()
 
 *Created by Markus G. S. Weiss on 2024-10-24.*
-*Last updated: 2024-11-21*
+*Last updated: 2025-03-10*
 
-qorca is a lightweight Python tool that streamlines the process of submitting ORCA quantum chemistry calculations to SLURM job schedulers with intelligent resource allocation and job management.
+qorca is a lightweight Python tool that streamlines the process of submitting ORCA quantum chemistry calculations to SLURM job schedulers with intelligent resource allocation and job management. It automatically detects and configures itself based on the cluster environment it's running in.
 
 ## Features
 
@@ -15,6 +15,8 @@ qorca is a lightweight Python tool that streamlines the process of submitting OR
 - Smart memory management with adjustable `%maxcore` settings.
 - Configurable scratch directory management.
 - Support for multiple ORCA versions (5.0.4, 6.0.0, 6.0.1).
+- Automatic cluster detection with cluster-specific configurations.
+- Multi-cluster support with optimized defaults for each environment.
 - Dry-run capability for testing job submission scripts.
 - Comprehensive error checking and validation.
 - Cross-version compatibility with different ORCA installations.
@@ -55,28 +57,67 @@ qorca provides a single command-line executable with extensive configuration opt
    export PATH=$PATH:/path/to/qorca
    ```
 
-### Customizing ORCA Installation Paths
+### Customizing Cluster and ORCA Configurations
 
-Before using qorca, you need to adjust the paths to your ORCA installation in the script. Open the `qorca` file in a text editor and modify the `ORCA_VERSIONS` dictionary near the top of the file:
+Before using qorca, you may need to adjust the cluster configurations and ORCA installation paths in the script. Open the `qorca` file in a text editor and modify the `CLUSTER_CONFIGS` dictionary near the top of the file:
 
 ```python
-ORCA_VERSIONS = {
-    '5.0.4': {
-        'module_loads': ['module load gnu9/9.4.0', 'module load openmpi4/4.1.1', 'module load orca/5.0.4'],
-        'orca_executable': '/opt/ohpc/pub/apps/orca/5.0.4/orca',
+CLUSTER_CONFIGS = {
+    "g2": {
+        "default_partition": "sterling",
+        "mem_per_cpu": 4000,  # MB
+        "default_time": "7-00:00:00",  # 7 days
+        "exclude_nodes": {
+            "sterling": ["compute-2-09-05"],  # GPU node(s) to exclude for sterling partition
+        },
+        "orca_versions": {
+            '5.0.4': {
+                'module_loads': ['module load gnu9/9.4.0', 'module load openmpi4/4.1.1', 'module load orca/5.0.4'],
+                'orca_executable': '/opt/ohpc/pub/apps/orca/5.0.4/orca',
+            },
+            '6.0.0': {
+                'module_loads': ['module load gnu12/12.4.0', 'module load openmpi4/4.1.6'],
+                'orca_executable': '/path/to/your/orca_6_0_0/orca',
+            },
+            '6.0.1': {
+                'module_loads': ['module load gnu12/12.4.0', 'module load openmpi4/4.1.6'],
+                'orca_executable': '/path/to/your/orca_6_0_1/orca',
+            },
+        }
     },
-    '6.0.0': {
-        'module_loads': ['module load gnu12/12.3.0', 'module load openmpi4/4.1.6'],
-        'orca_executable': '/path/to/your/orca_6_0_0/orca',
-    },
-    '6.0.1': {
-        'module_loads': ['module load gnu12/12.3.0', 'module load openmpi4/4.1.6'],
-        'orca_executable': '/path/to/your/orca_6_0_1/orca',
-    },
+    # Add configurations for your other clusters if needed
 }
 ```
 
-Adjust both the `module_loads` list and the `orca_executable` path for each ORCA version to match your cluster's configuration. You can also add additional ORCA versions as needed.
+For each cluster configuration, you can customize:
+- Default partition to use
+- Memory allocation per CPU
+- Default walltime
+- Nodes to exclude for specific partitions
+- ORCA versions with their module loads and executable paths
+
+### Cluster Detection
+
+The script automatically detects which cluster it's running on through:
+
+1. **Environment variable**: You can explicitly set the cluster by defining the `CLUSTER_NAME` environment variable:
+   ```bash
+   export CLUSTER_NAME=g2
+   ```
+
+2. **SLURM configuration**: If the environment variable is not set, qorca will try to detect the cluster name from SLURM's configuration using `scontrol show config`.
+
+3. **Default fallback**: If neither method works, it falls back to a default cluster (g2).
+
+You can also customize the mapping between SLURM's cluster names and your configuration keys by modifying the `cluster_mapping` dictionary in the `detect_cluster` function:
+
+```python
+cluster_mapping = {
+    'g2': 'g2',
+    'juno': 'juno',
+    # Add your custom mappings here
+}
+```
 
 ## Usage
 
@@ -91,8 +132,8 @@ Run the executable with the following syntax:
 - `-c, --cpus NUM`: Number of CPUs to allocate in SLURM (default: matches PAL value)
 - `-p, --pal NUM`: Set the PAL value in the ORCA input file
 - `-m, --maxcore GB`: Set or overwrite the %maxcore value (in GB per core)
-- `-t, --time TIME`: Wall time in SLURM format (default: 1-00:00:00)
-- `-q, --partition PART`: SLURM partition name (default: sterling)
+- `-t, --time TIME`: Wall time in SLURM format (default depends on cluster, e.g., 7 days for g2)
+- `-q, --partition PART`: SLURM partition name (default depends on cluster, e.g., sterling for g2)
 - `-v, --version VER`: ORCA version to use (default: 6.0.1)
 - `-d, --dryrun`: Create the submission script without running it
 - `--save-scratch`: Preserve scratch directory after job completion
@@ -109,7 +150,7 @@ To submit a basic ORCA job:
 To specify resources and ORCA version:
 
    ```
-   qorca calculation.inp -c 16 -p 16 -m 4 -t 2-00:00:00 -v 6.0.1
+   qorca calculation.inp -p 16 -t 2-00:00:00 -v 6.0.1
    ```
 
 To create a submission script without submitting:
