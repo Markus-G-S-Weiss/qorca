@@ -11,7 +11,7 @@ Usage:
 Author:
     Markus G. S. Weiss
 Date:
-    2024-11-18
+    2024-11-21
 """
 
 import argparse
@@ -32,14 +32,14 @@ ORCA_VERSIONS = {
     },
     '6.0.0': {
         'module_loads': [
-            'module load gnu12/12.3.0',
+            'module load gnu12/12.4.0',
             'module load openmpi4/4.1.6',
         ],
         'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_0/orca',
     },
     '6.0.1': {
         'module_loads': [
-            'module load gnu12/12.3.0',
+            'module load gnu12/12.4.0',
             'module load openmpi4/4.1.6',
         ],
         'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_1_avx2/orca',
@@ -49,7 +49,12 @@ ORCA_VERSIONS = {
 
 
 def parse_arguments():
-    """Parse command-line arguments."""
+    """
+    Parse command-line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(description='Submit ORCA job to SLURM')
     parser.add_argument('input_file', help='ORCA input file')
 
@@ -127,7 +132,18 @@ def parse_arguments():
 
 
 def read_input_file(input_path):
-    """Read the ORCA input file."""
+    """
+    Read the ORCA input file.
+
+    Args:
+        input_path (Path): Path to the input file.
+
+    Returns:
+        list: Lines of the input file.
+
+    Raises:
+        SystemExit: If the input file does not exist.
+    """
     if not input_path.is_file():
         print(
             f"Error: Input file '{input_path}' does not exist. "
@@ -135,8 +151,7 @@ def read_input_file(input_path):
             file=sys.stderr
         )
         sys.exit(1)
-    with input_path.open('r') as f:
-        lines = f.readlines()
+    lines = input_path.read_text().splitlines(keepends=True)
     return lines
 
 
@@ -145,10 +160,10 @@ def parse_pal_from_input(lines):
     Parse PAL value from ORCA input file lines.
 
     Args:
-        lines (list): List of strings representing lines in the ORCA input file.
+        lines (list): Lines from the ORCA input file.
 
     Returns:
-        int: The PAL value found in the input file, or None if not found.
+        int or None: The PAL value found, or None if not found.
     """
     input_text = ''.join(lines)
     # Use regex to find %pal ... end blocks, regardless of formatting
@@ -172,51 +187,6 @@ def parse_pal_from_input(lines):
     return None
 
 
-def parse_maxcore_from_input(lines):
-    """
-    Parse %maxcore value from ORCA input file lines.
-
-    Args:
-        lines (list): List of strings representing lines in the ORCA input file.
-
-    Returns:
-        int: The maxcore value found in the input file, or None if not found.
-    """
-    maxcore = None
-    input_text = ''.join(lines)
-    match = re.search(r'%maxcore\s+(\d+)', input_text, re.IGNORECASE)
-    if match:
-        maxcore = int(match.group(1))
-    return maxcore
-
-
-def adjust_maxcore_in_input(lines, maxcore_value):
-    """
-    Adjust the %maxcore value in the ORCA input file.
-
-    If %maxcore is not found, it is added at the end of the file.
-
-    Args:
-        lines (list): List of strings representing lines in the ORCA input file.
-        maxcore_value (int): The maxcore value to set (in MB).
-
-    Returns:
-        list: The modified list of lines.
-    """
-    input_text = ''.join(lines)
-    if re.search(r'%maxcore\s+\d+', input_text, re.IGNORECASE):
-        input_text = re.sub(
-            r'(%maxcore\s+)(\d+)',
-            r'\g<1>{}'.format(maxcore_value),
-            input_text,
-            flags=re.IGNORECASE
-        )
-    else:
-        input_text += f'%maxcore {maxcore_value}\n'
-    new_lines = input_text.splitlines(True)
-    return new_lines
-
-
 def adjust_pal_in_input(lines, pal_value):
     """
     Adjust the PAL value in the ORCA input file.
@@ -224,7 +194,7 @@ def adjust_pal_in_input(lines, pal_value):
     If %pal block is not found and PAL is not in '!' line, it is added at the end.
 
     Args:
-        lines (list): List of strings representing lines in the ORCA input file.
+        lines (list): Lines from the ORCA input file.
         pal_value (int): The PAL value to set.
 
     Returns:
@@ -294,21 +264,203 @@ def adjust_pal_in_input(lines, pal_value):
     return new_lines, changes_made
 
 
-def validate_resources(pal_value, cpus, force=False):
+def handle_pal(args, lines, input_path):
+    """
+    Handle PAL adjustments in the input file.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+        lines (list): Lines from the input file.
+        input_path (Path): Path to the input file.
+
+    Returns:
+        tuple: (int, updated lines from the input file)
+    """
+    # Parse pal value from input file
+    input_file_pal = parse_pal_from_input(lines)
+
+    if args.pal is not None:
+        pal_value = args.pal
+        new_lines, changes_made = adjust_pal_in_input(lines, pal_value)
+        if changes_made:
+            # Overwrite the input file in the working directory
+            with input_path.open('w') as f:
+                f.writelines(new_lines)
+            print(
+                f"Input file '{input_path}' overwritten with specified PAL value ({pal_value}).",
+                file=sys.stderr
+            )
+            lines = new_lines
+        else:
+            print(
+                f"PAL value in '{input_path}' is already set to {pal_value}.",
+                file=sys.stderr
+            )
+    else:
+        # Use PAL value from input file or default to 1
+        pal_value = input_file_pal if input_file_pal is not None else 1
+
+    return pal_value, lines
+
+
+def parse_maxcore_from_input(lines):
+    """
+    Parse %maxcore value from ORCA input file lines.
+
+    Args:
+        lines (list): Lines from the ORCA input file.
+
+    Returns:
+        int or None: The maxcore value found, or None if not found.
+    """
+    maxcore = None
+    input_text = ''.join(lines)
+    match = re.search(r'%maxcore\s+(\d+)', input_text, re.IGNORECASE)
+    if match:
+        maxcore = int(match.group(1))
+    return maxcore
+
+
+def adjust_maxcore_in_input(lines, maxcore_value):
+    """
+    Adjust the %maxcore value in the ORCA input file.
+
+    If %maxcore is not found, it is added at the end of the file.
+
+    Args:
+        lines (list): Lines from the ORCA input file.
+        maxcore_value (int): The maxcore value to set (in MB).
+
+    Returns:
+        tuple: (list of lines, bool indicating whether changes were made)
+    """
+    input_text = ''.join(lines)
+    original_input_text = input_text  # Save original input
+
+    # Check if %maxcore is present and parse its value
+    current_maxcore = parse_maxcore_from_input(lines)
+
+    if current_maxcore is not None:
+        if current_maxcore == maxcore_value:
+            # Maxcore is already set to the desired value; no changes needed
+            changes_made = False
+            new_lines = lines
+        else:
+            # Replace the existing %maxcore value with the desired value
+            input_text = re.sub(
+                r'(%maxcore\s+)(\d+)',
+                r'\g<1>{}'.format(maxcore_value),
+                input_text,
+                flags=re.IGNORECASE
+            )
+            changes_made = True
+            new_lines = input_text.splitlines(True)
+    else:
+        # %maxcore not found; append it to the end
+        input_text += f'\n%maxcore {maxcore_value}\n'
+        changes_made = True
+        new_lines = input_text.splitlines(True)
+
+    return new_lines, changes_made
+
+
+def check_memory_requirements(maxcore_value, pal_value, cpus):
+    """
+    Check if total ORCA memory exceeds total SLURM memory.
+
+    Args:
+        maxcore_value (int): Maxcore value in MB.
+        pal_value (int): PAL value being used.
+        cpus (int): Number of CPUs allocated in SLURM.
+
+    Raises:
+        SystemExit: If total ORCA memory exceeds total SLURM memory.
+    """
+    total_orca_memory = maxcore_value * pal_value  # MB
+    total_slurm_memory = cpus * 4000  # MB (assuming --mem-per-cpu=4000)
+
+    if total_orca_memory > total_slurm_memory:
+        print(
+            f"Error: Total ORCA memory ({total_orca_memory} MB) exceeds "
+            f"total SLURM memory ({total_slurm_memory} MB).",
+            file=sys.stderr
+        )
+        print(
+            "Adjust '--maxcore', number of CPUs/PAL, or %maxcore in input file to ensure total "
+            "ORCA memory does not exceed total SLURM memory.",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+
+def handle_maxcore(args, lines, pal_value, input_path):
+    """
+    Handle maxcore adjustments in the input file.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+        lines (list): Lines from the input file.
+        pal_value (int): PAL value being used.
+        input_path (Path): Path to the input file.
+
+    Returns:
+        tuple: (int or None, updated lines from the input file)
+    """
+    # Parse maxcore value from input file
+    input_file_maxcore = parse_maxcore_from_input(lines)
+
+    if args.maxcore is not None:
+        # Convert maxcore from GB to MB and apply 75% scaling
+        maxcore_value = int(args.maxcore * 1024 * 0.75)  # MB
+
+        # Check if total ORCA memory exceeds total SLURM memory
+        check_memory_requirements(maxcore_value, pal_value, args.cpus)
+
+        # Adjust %maxcore in input file
+        new_lines, changes_made = adjust_maxcore_in_input(lines, maxcore_value)
+        if changes_made:
+            # Overwrite the input file
+            with input_path.open('w') as f:
+                f.writelines(new_lines)
+            print(
+                f"Input file '{input_path}' overwritten with adjusted %maxcore value ({maxcore_value} MB).",
+                file=sys.stderr
+            )
+            lines = new_lines
+        else:
+            print(
+                f"%maxcore value in '{input_path}' is already set to {maxcore_value} MB.",
+                file=sys.stderr
+            )
+    else:
+        if input_file_maxcore is not None:
+            maxcore_value = input_file_maxcore
+            # Check if total ORCA memory exceeds total SLURM memory
+            check_memory_requirements(maxcore_value, pal_value, args.cpus)
+            # No changes to input file; no message needed
+        else:
+            maxcore_value = None
+            # No %maxcore set and no --maxcore provided; no message needed
+
+    return maxcore_value, lines
+
+
+def validate_resources(args, pal_value, force=False):
     """
     Validate resource allocation between PAL value and CPUs.
 
     Args:
+        args (argparse.Namespace): Parsed command-line arguments.
         pal_value (int): PAL value specified or parsed from input.
-        cpus (int): Number of CPUs allocated in SLURM.
-        force (bool): If True, proceed despite mismatches.
+        force (bool, optional): Proceed despite mismatches if True.
 
     Returns:
-        None
+        int: Number of CPUs to allocate in SLURM.
 
     Raises:
         SystemExit: If mismatches are found and not forced.
     """
+    cpus = args.cpus if args.cpus is not None else pal_value
     errors = []
 
     if pal_value != cpus:
@@ -334,72 +486,20 @@ def validate_resources(pal_value, cpus, force=False):
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
 
+    return cpus
 
-def handle_maxcore(args, lines, pal_value, input_path):
+
+def handle_version_settings(args):
     """
-    Handle maxcore adjustments in the input file.
+    Retrieve ORCA version settings and return module load commands and executable path.
 
     Args:
-        args: Parsed command-line arguments.
-        lines: Lines from the input file.
-        pal_value: PAL value being used.
-        input_path: Path to the input file.
+        args (argparse.Namespace): Parsed command-line arguments.
 
     Returns:
-        list: Possibly modified lines from the input file.
+        tuple: (list of module load commands, str of ORCA executable path)
     """
-    if args.maxcore is not None:
-        # Calculate maxcore_value in MB
-        maxcore_value = int(args.maxcore) * 1024 * 0.75  # MB
-        maxcore_value = int(maxcore_value)
-        # Check if total ORCA memory exceeds total SLURM memory
-        total_orca_memory = maxcore_value * pal_value  # MB
-        total_slurm_memory = args.cpus * 4000  # MB
-        if total_orca_memory > total_slurm_memory:
-            print(
-                f"Error: Total ORCA memory ({total_orca_memory} MB) exceeds "
-                f"total SLURM memory ({total_slurm_memory} MB).",
-                file=sys.stderr
-            )
-            print(
-                "Adjust '--maxcore' or number of CPUs/PAL to ensure total "
-                "ORCA memory does not exceed total SLURM memory.",
-                file=sys.stderr
-            )
-            sys.exit(1)
-        # Adjust %maxcore in input file
-        new_lines = adjust_maxcore_in_input(lines, maxcore_value)
-        if lines != new_lines:
-            # Overwrite the input file with adjusted %maxcore
-            with input_path.open('w') as f:
-                f.writelines(new_lines)
-            print(
-                f"Input file '{input_path}' overwritten with adjusted %maxcore "
-                "value.",
-                file=sys.stderr
-            )
-        else:
-            print(
-                f"%maxcore value in '{input_path}' is already set to {maxcore_value}.",
-                file=sys.stderr
-            )
-        lines = new_lines
-    return lines
-
-
-def get_orca_version_settings(version):
-    """
-    Retrieve ORCA version settings.
-
-    Args:
-        version (str): ORCA version specified.
-
-    Returns:
-        dict: Settings for the specified ORCA version.
-
-    Raises:
-        SystemExit: If the specified version is not recognized.
-    """
+    version = args.version
     if version not in ORCA_VERSIONS:
         print(
             f"Error: ORCA version '{version}' is not recognized.",
@@ -410,20 +510,24 @@ def get_orca_version_settings(version):
             file=sys.stderr
         )
         sys.exit(1)
-    return ORCA_VERSIONS[version]
+
+    version_info = ORCA_VERSIONS[version]
+    module_load_commands = version_info['module_loads']
+    orca_executable = version_info['orca_executable']
+    return module_load_commands, orca_executable
 
 
 def generate_slurm_script(
-    args, module_load_commands, orca_executable, input_path
-):
+        args, module_load_commands, orca_executable, input_path
+        ):
     """
     Generate the SLURM script based on provided parameters.
 
     Args:
-        args: Parsed command-line arguments.
-        module_load_commands: List of module load commands.
-        orca_executable: Path to the ORCA executable.
-        input_path: Path object of the input file.
+        args (argparse.Namespace): Parsed command-line arguments.
+        module_load_commands (list): Module load commands.
+        orca_executable (str): Path to the ORCA executable.
+        input_path (Path): Path to the input file.
 
     Returns:
         str: Name of the generated SLURM script file.
@@ -494,7 +598,7 @@ def generate_slurm_script(
             '{ echo "Error: Failed to copy input file"; exit 1; }\n'
         )
         f.write(
-            'for file in *.xyz *.pot *.gbw; do\n'
+            'for file in *.xyz *.pot *.gbw *.hess; do\n'
             '  if [ -e "$file" ]; then\n'
             '    cp "$file" $SCRATCH_DIR/ || { echo "Error: Failed to '
             'copy $file"; exit 1; }\n'
@@ -564,111 +668,78 @@ def submit_job(slurm_script, args):
 
     Args:
         slurm_script (str): Name of the SLURM script file.
-        args: Parsed command-line arguments.
+        args (argparse.Namespace): Parsed command-line arguments.
 
-    Returns:
-        None
+    Raises:
+        SystemExit: If job submission fails.
     """
-    cmd = ['sbatch', slurm_script]
-    try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            check=True
-        )
-        # Parse job ID from output
-        job_id = None
-        for line in result.stdout.strip().split('\n'):
-            if 'Submitted batch job' in line:
-                job_id = line.strip().split()[-1]
-                break
-        if job_id:
-            print(f'Submitted job {job_id}')
-        else:
+    if args.dryrun:
+        print(f"Dry run: SLURM script written to {slurm_script}")
+    else:
+        # Submit the job
+        cmd = ['sbatch', str(slurm_script)]
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                check=True
+            )
+            # Parse job ID from output
+            job_id = None
+            for line in result.stdout.strip().split('\n'):
+                if 'Submitted batch job' in line:
+                    job_id = line.strip().split()[-1]
+                    break
+            if job_id:
+                print(f'Submitted job {job_id}')
+            else:
+                print(
+                    'Error: Failed to parse job ID from sbatch output.',
+                    file=sys.stderr
+                )
+                sys.exit(1)
+        except subprocess.CalledProcessError as e:
             print(
-                'Error: Failed to parse job ID from sbatch output.',
+                f"Error: Failed to submit job. sbatch returned an error:\n"
+                f"{e.stderr}",
                 file=sys.stderr
             )
             sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: Failed to submit job. sbatch returned an error:\n"
-            f"{e.stderr}",
-            file=sys.stderr
-        )
-        sys.exit(1)
-
-    if not args.save_slurm:
-        # Clean up the SLURM script
-        slurm_script_path = Path(slurm_script)
-        if slurm_script_path.exists():
-            slurm_script_path.unlink()
+    
+        if not args.save_slurm:
+            # Clean up the SLURM script
+            slurm_script_path = Path(slurm_script)
+            if slurm_script_path.exists():
+                slurm_script_path.unlink()
 
 
 def main():
-    """
-    Main function to parse arguments, process the input file,
-    generate the SLURM script, and submit the job.
-    """
+    """Main function to parse arguments and run the ORCA job submission."""
     args = parse_arguments()
     input_path = Path(args.input_file)
     lines = read_input_file(input_path)
 
-    # Parse pal and maxcore values from input file
-    input_file_pal = parse_pal_from_input(lines)
-    input_file_maxcore = parse_maxcore_from_input(lines)
+    # Handle PAL adjustments
+    pal_value, lines = handle_pal(args, lines, input_path)
 
-    # If --pal is specified, adjust the input file
-    if args.pal is not None:
-        pal_value = args.pal
-        new_lines, changes_made = adjust_pal_in_input(lines, pal_value)
-        if changes_made:
-            # Overwrite the input file in the working directory
-            with input_path.open('w') as f:
-                f.writelines(new_lines)
-            print(
-                f"Input file '{input_path}' overwritten with specified PAL value ({pal_value}).",
-                file=sys.stderr
-            )
-            lines = new_lines
-        else:
-            print(
-                f"PAL value in '{input_path}' is already set to {pal_value}.",
-                file=sys.stderr
-            )
-    else:
-        # Use PAL value from input file or default to 1
-        pal_value = input_file_pal if input_file_pal is not None else 1
+    # Validate resources and set CPUs
+    args.cpus = validate_resources(args, pal_value, force=args.force)
 
-    # Set cpus (number of CPUs to allocate in SLURM)
-    if args.cpus is not None:
-        args.cpus = args.cpus
-    else:
-        args.cpus = pal_value  # Default to pal_value
-
-    # Validate resource allocation
-    validate_resources(pal_value, args.cpus, force=args.force)
-
-    # Handle maxcore
-    lines = handle_maxcore(args, lines, pal_value, input_path)
+    # Handle maxcore adjustments
+    maxcore_value, lines = handle_maxcore(args, lines, pal_value, input_path)
 
     # Retrieve ORCA version settings
-    version_info = get_orca_version_settings(args.version)
-    module_load_commands = version_info['module_loads']
-    orca_executable = version_info['orca_executable']
+    module_load_commands, orca_executable = handle_version_settings(args)
 
     # Generate SLURM script
     slurm_script = generate_slurm_script(
         args, module_load_commands, orca_executable, input_path
     )
 
-    if args.dryrun:
-        print(f"Dry run: SLURM script written to {slurm_script}")
-    else:
-        # Submit the job
-        submit_job(slurm_script, args)
+    # Submit the job
+    submit_job(slurm_script, args)
 
 
 if __name__ == '__main__':

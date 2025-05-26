@@ -4,6 +4,7 @@
 [![GitHub top language](https://img.shields.io/github/languages/top/Markus-G-S-Weiss/qorca.svg)]()
 
 *Created by Markus G. S. Weiss on 2024-10-24.*
+*Last updated: 2024-11-21*
 
 qorca is a lightweight Python tool that streamlines the process of submitting ORCA quantum chemistry calculations to SLURM job schedulers with intelligent resource allocation and job management.
 
