@@ -67,6 +67,7 @@ CLUSTER_CONFIGS = {
         "default_partition": "sterling",
         "mem_per_cpu": 4000,  # MB
         "default_time": "7-00:00:00",  # 7 days
+        "scratch_base_dir": "/scratch/ganymede2/$USER",  # Base directory for scratch files
         "exclude_nodes": {
             "sterling": ["compute-2-09-05"],  # GPU node(s) to exclude for sterling partition
         },
@@ -93,6 +94,7 @@ For each cluster configuration, you can customize:
 - Default partition to use
 - Memory allocation per CPU
 - Default walltime
+- Base scratch directory path
 - Nodes to exclude for specific partitions
 - ORCA versions with their module loads and executable paths
 
@@ -175,6 +177,17 @@ To adjust memory and preserve scratch:
 - `-x, --exclude NODES`: Exclude specific nodes (comma-separated)
 - `-F, --force`: Proceed despite resource mismatches
 - `-k, --save-slurm`: Keep SLURM script after submission
+
+## Scratch Directory Handling
+
+The script handles scratch directories in the following way:
+
+1. It tries to use the cluster-specific scratch directory defined in `CLUSTER_CONFIGS["cluster_name"]["scratch_base_dir"]`
+2. If this directory doesn't exist or can't be created (e.g., due to permission issues):
+   - An error message is displayed
+   - The job is terminated with an exit code of 1
+   
+This approach ensures that jobs only run when a proper scratch directory is available, preventing potential issues with disk space in the working directory. Make sure that the scratch directory specified in the cluster configuration exists and is writable by the user.
 
 ## License
 

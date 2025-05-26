@@ -27,6 +27,7 @@ CLUSTER_CONFIGS = {
         "default_partition": "sterling",
         "mem_per_cpu": 4000,  # MB
         "default_time": "7-00:00:00",  # 7 days
+        "scratch_base_dir": "/scratch/ganymede2/$USER",  # Base directory for scratch files
         "exclude_nodes": {
             "sterling": ["compute-2-09-05"],  # GPU node(s) to exclude for sterling partition
             # Add other partitions here if needed
@@ -60,6 +61,7 @@ CLUSTER_CONFIGS = {
         "default_partition": "normal",
         "mem_per_cpu": 3000,  # MB
         "default_time": "2-00:00:00",  # 2 days
+        "scratch_base_dir": "/scratch/juno/$USER",  # Base directory for scratch files
         "exclude_nodes": {},
         "orca_versions": {
             '6.0.0': {
@@ -663,10 +665,11 @@ def generate_slurm_script(
     slurm_script_path = Path(slurm_script)
     cpus = args.cpus
 
-    # Get node exclusion configuration from cluster config
+    # Get configuration from cluster config
     cluster_config = CLUSTER_CONFIGS.get(cluster_name, CLUSTER_CONFIGS["g2"])
     exclude_config = cluster_config.get("exclude_nodes", {})
     partition_excludes = exclude_config.get(args.partition, [])
+    scratch_base_dir = cluster_config.get("scratch_base_dir")
     
     with slurm_script_path.open('w') as f:
         # SLURM directives
@@ -712,7 +715,7 @@ def generate_slurm_script(
 
         f.write('\n# Set scratch directory\n')
         f.write('export ORIG=$PWD\n')
-        f.write('export SCRATCH=/home/$USER/scratch\n')
+        f.write(f'export SCRATCH={scratch_base_dir}\n')
         f.write('timestamp=$(date +%Y%m%d%H%M%S)\n')
         f.write(
             'random_str=$(tr -dc a-z0-9 </dev/urandom | head -c 8)\n'
@@ -726,7 +729,7 @@ def generate_slurm_script(
             )
         f.write(
             'mkdir -p $SCRATCH_DIR || { echo "Error: Failed to create '
-            'scratch directory"; exit 1; }\n'
+            'scratch directory $SCRATCH_DIR"; exit 1; }\n'
         )
         f.write('echo "SCRATCH_DIR is set to $SCRATCH_DIR"\n')
 
