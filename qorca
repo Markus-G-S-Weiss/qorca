@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""
+This script submits ORCA jobs to a SLURM scheduler.
+
+It parses the ORCA input file, adjusts settings as specified,
+generates a SLURM script, and submits the job.
+
+Usage:
+    qorca [options] input_file
+
+Author:
+    Markus G. S. Weiss
+Date:
+    2024-10-24
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import re
+
+# Define ORCA version settings for easy modification
+ORCA_VERSIONS = {
+    '5.0.4': {
+        'module_loads': ['module load gnu9/9.4.0', 'module load openmpi4/4.1.1', 'module load orca/5.0.4'],
+        'orca_executable': '/opt/ohpc/pub/apps/orca/5.0.4/orca',
+    },
+    '6.0.0': {
+        'module_loads': ['module load gnu12/12.3.0', 'module load openmpi4/4.1.6'],
+        'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_0/orca',
+    },
+    '6.0.1': {
+        'module_loads': ['module load gnu12/12.3.0', 'module load openmpi4/4.1.6'],
+        'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_1_avx2/orca',
+    },
+    # Add more versions as needed
+}
+
+
+def parse_pal_from_input(lines):
+    """
+    Parse PAL value from ORCA input file lines.
+
+    Args:
+        lines (list): List of strings representing lines in the ORCA input file.
+
+    Returns:
+        int: The PAL value found in the input file, or None if not found.
+    """
+    pal_value = None
+    in_pal_block = False
+    pal_block_lines = []
+    for i, line in enumerate(lines):
+        stripped_line = line.strip()
+        lower_line = stripped_line.lower()
+
+        # Check for %pal block
+        if lower_line.startswith('%pal'):
+            in_pal_block = True
+            pal_block_lines.append(stripped_line)
+            continue
+
+        if in_pal_block:
+            pal_block_lines.append(stripped_line)
+            if lower_line == 'end':
+                # Process the pal block
+                pal_block_content = ' '.join(pal_block_lines)
+                match = re.search(r'nprocs\s+(\d+)', pal_block_content, re.IGNORECASE)
+                if match:
+                    pal_value = int(match.group(1))
+                    break
+                else:
+                    # No nprocs found in %pal block
+                    in_pal_block = False
+                    pal_block_lines = []
+            continue
+
+        # If line starts with !, process it
+        if stripped_line.startswith('!'):
+            # Remove !
+            content = stripped_line[1:].strip()
+            # Split by spaces
+            tokens = content.split()
+            for token in tokens:
+                # Check for pal#
+                match = re.match(r'pal(\d+)', token.lower())
+                if match:
+                    pal_value = int(match.group(1))
+                    break
+            if pal_value:
+                break
+    return pal_value
+
+
+def parse_maxcore_from_input(lines):
+    """
+    Parse %maxcore value from ORCA input file lines.
+
+    Args:
+        lines (list): List of strings representing lines in the ORCA input file.
+
+    Returns:
+        int: The maxcore value found in the input file, or None if not found.
+    """
+    maxcore = None
+    for line in lines:
+        stripped_line = line.strip()
+        if stripped_line.lower().startswith('%maxcore'):
+            parts = stripped_line.split()
+            if len(parts) >= 2:
+                try:
+                    maxcore = int(parts[1])
+                    break
+                except ValueError:
+                    pass
+    return maxcore
+
+
+def adjust_maxcore_in_input(lines, maxcore_value):
+    """
+    Adjust the %maxcore value in the ORCA input file.
+
+    If %maxcore is not found, it is added at the end of the file.
+
+    Args:
+        lines (list): List of strings representing lines in the ORCA input file.
+        maxcore_value (int): The maxcore value to set (in MB).
+
+    Returns:
+        list: The modified list of lines.
+    """
+    new_lines = []
+    maxcore_found = False
+    for line in lines:
+        stripped_line = line.strip()
+        if stripped_line.lower().startswith('%maxcore'):
+            new_line = f'%maxcore {maxcore_value}\n'
+            new_lines.append(new_line)
+            maxcore_found = True
+        else:
+            new_lines.append(line)
+    if not maxcore_found:
+        # Add %maxcore at the end
+        new_lines.append(f'%maxcore {maxcore_value}\n')
+    return new_lines
+
+
+def adjust_input_file(lines, pal_value):
+    """
+    Adjust the PAL value in the ORCA input file.
+
+    If %pal block is not found, it is added at the end of the file.
+
+    Args:
+        lines (list): List of strings representing lines in the ORCA input file.
+        pal_value (int): The PAL value to set.
+
+    Returns:
+        list: The modified list of lines.
+    """
+    new_lines = []
+    in_pal_block = False
+    pal_block_lines = []
+    pal_block_modified = False
+
+    for i, line in enumerate(lines):
+        stripped_line = line.strip()
+        lower_line = stripped_line.lower()
+
+        # Check for %pal block
+        if lower_line.startswith('%pal'):
+            in_pal_block = True
+            pal_block_lines = [line]
+            continue
+
+        if in_pal_block:
+            pal_block_lines.append(line)
+            if lower_line == 'end':
+                # Process the pal block
+                pal_block_modified = False
+                for j, pal_line in enumerate(pal_block_lines):
+                    if re.search(r'nprocs', pal_line, re.IGNORECASE):
+                        pal_block_lines[j] = re.sub(r'(nprocs\s+)(\d+)', r'\g<1>{}'.format(pal_value),
+                                                    pal_line, flags=re.IGNORECASE)
+                        pal_block_modified = True
+                        break
+                if not pal_block_modified:
+                    # Add NPROCS directive if not present
+                    pal_block_lines.insert(-1, f'   nprocs {pal_value}\n')
+                # Replace the pal block in new_lines
+                new_lines.extend(pal_block_lines)
+                in_pal_block = False
+                pal_block_lines = []
+            continue
+
+        # If line starts with !, process it
+        if stripped_line.startswith('!'):
+            tokens = stripped_line.split()
+            modified_tokens = []
+            for token in tokens:
+                if re.match(r'!pal\d+', token.lower()):
+                    modified_tokens.append(f'!PAL{pal_value}')
+                elif re.match(r'pal\d+', token.lower()):
+                    modified_tokens.append(f'PAL{pal_value}')
+                else:
+                    modified_tokens.append(token)
+            new_line = ' '.join(modified_tokens) + '\n'
+            new_lines.append(new_line)
+        else:
+            new_lines.append(line)
+
+    # If no %pal block was found, add one at the end
+    if not any('%pal' in line.lower() for line in new_lines):
+        new_lines.append(f'\n%pal\n   nprocs {pal_value}\nend\n')
+
+    return new_lines
+
+
+def main():
+    """
+    Main function to parse arguments, process the input file,
+    generate the SLURM script, and submit the job.
+    """
+    parser = argparse.ArgumentParser(description='Submit ORCA job to SLURM')
+    parser.add_argument('input_file', help='ORCA input file')
+
+    # Optional arguments
+    parser.add_argument('-c', '--cpus', type=int,
+                        help='Number of CPUs to allocate in SLURM (default: matches PAL value)')
+    parser.add_argument('-p', '--pal', type=int,
+                        help='Number of processes (PAL value) to set in ORCA input file')
+    parser.add_argument('-m', '--maxcore', type=int,
+                        help='Set or overwrite the %%maxcore value in ORCA input file (in GB per core)')
+    parser.add_argument('-t', '--time', dest='walltime', default='1-00:00:00',
+                        help='Wall time in SLURM format (default: 1-00:00:00)')
+    parser.add_argument('--partition', '-q', default='sterling',
+                        help='Partition name (default: sterling)')
+    parser.add_argument('--name', '-n', dest='job_name',
+                        help='Specifies the name of the job (default: input file name)')
+    parser.add_argument('--output', '-o',
+                        help='Output file name (default: input file with .out extension)')
+    parser.add_argument('--error', '-e',
+                        help='Error file name (default: input file with .err extension)')
+    parser.add_argument('--scratch', '-s', type=str,
+                        help='Specify scratch directory name (default: unique name generated under base scratch directory)')
+    parser.add_argument('--dryrun', '-d', action='store_true', default=False,
+                        help='Just creates the script file rather than running it')
+    parser.add_argument('--save-scratch', action='store_true',
+                        help='Do not delete the scratch directory after completion')
+    parser.add_argument('--node', '-N', dest='node', help='Node to submit the job to')
+    parser.add_argument('--exclude', '-x', help='Nodes to exclude (comma-separated list)')
+    parser.add_argument('--force', '-F', action='store_true',
+                        help='Proceed even if there are mismatches between specified and input file values')
+    parser.add_argument('--version', '-v', type=str,
+                        default='6.0.1',
+                        help='ORCA version to use (e.g., 5.0.4, 6.0.0, 6.0.1) (default: 6.0.1)')
+    parser.add_argument('--save-all', '-f', action='store_true',
+                        help='Copy all files from scratch directory back to working directory')
+    parser.add_argument('--save-slurm', '-k', action='store_true',
+                        help='Do not remove SLURM script from current directory')
+
+    args = parser.parse_args()
+
+    input_file = args.input_file
+    if not os.path.isfile(input_file):
+        print(f"Error: Input file '{input_file}' does not exist. Please check the file path and try again.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Generate output file name
+    if args.output:
+        output_file = args.output
+    else:
+        output_file = os.path.splitext(os.path.basename(input_file))[0] + '.out'
+
+    # Generate error file name
+    if args.error:
+        error_file = args.error
+    else:
+        error_file = os.path.splitext(os.path.basename(input_file))[0] + '.err'
+
+    # Job name
+    if args.job_name:
+        job_name = args.job_name
+    else:
+        job_name = os.path.splitext(os.path.basename(input_file))[0]
+
+    # Read the input file
+    with open(input_file, 'r') as f:
+        lines = f.readlines()
+
+    # Parse pal value from input file
+    input_file_pal = parse_pal_from_input(lines)
+    input_file_maxcore = parse_maxcore_from_input(lines)
+
+    # If --pal is specified, adjust the input file
+    if args.pal is not None:
+        pal_value = args.pal
+        lines = adjust_input_file(lines, pal_value)
+        # Overwrite the input file in the working directory
+        with open(input_file, 'w') as f:
+            f.writelines(lines)
+        print(f"Warning: Input file '{input_file}' overwritten with specified PAL value ({pal_value}).",
+              file=sys.stderr)
+    else:
+        # Use PAL value from input file or default to 1
+        pal_value = input_file_pal if input_file_pal is not None else 1
+
+    # Set cpus (number of CPUs to allocate in SLURM)
+    if args.cpus is not None:
+        cpus = args.cpus
+    else:
+        cpus = pal_value  # Default to pal_value
+
+    # Check for mismatches
+    errors = []
+
+    if pal_value != cpus:
+        errors.append(f"Number of CPUs ({cpus}) does not match PAL value ({pal_value}).")
+
+    if errors and not args.force:
+        print("Error: Mismatch detected between specified CPUs and PAL value:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        print("Use '--force' to proceed anyway, or adjust your input file or command-line arguments.",
+              file=sys.stderr)
+        sys.exit(1)
+    elif errors and args.force:
+        print("Warning: Proceeding despite mismatches:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+
+    # Handle maxcore
+    if args.maxcore is not None:
+        # Calculate maxcore_value in MB
+        maxcore_value = int(args.maxcore) * 1024 * 0.75  # MB
+        maxcore_value = int(maxcore_value)
+        # Check if total ORCA memory exceeds total SLURM memory
+        total_orca_memory = maxcore_value * pal_value  # MB
+        total_slurm_memory = cpus * 4000  # MB
+        if total_orca_memory > total_slurm_memory:
+            print(f"Error: Total ORCA memory ({total_orca_memory} MB) exceeds total SLURM memory "
+                  f"({total_slurm_memory} MB).", file=sys.stderr)
+            print("Adjust '--maxcore' or number of CPUs/PAL to ensure total ORCA memory does not exceed total SLURM memory.",
+                  file=sys.stderr)
+            sys.exit(1)
+        # Adjust %maxcore in input file
+        lines = adjust_maxcore_in_input(lines, maxcore_value)
+        # Overwrite the input file with adjusted %maxcore
+        with open(input_file, 'w') as f:
+            f.writelines(lines)
+        print(f"Input file '{input_file}' overwritten with adjusted %maxcore value.", file=sys.stderr)
+
+    # Version settings
+    if args.version not in ORCA_VERSIONS:
+        print(f"Error: ORCA version '{args.version}' is not recognized.", file=sys.stderr)
+        print(f"Available versions: {', '.join(ORCA_VERSIONS.keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    version_info = ORCA_VERSIONS[args.version]
+    module_load_commands = version_info['module_loads']
+    orca_executable = version_info['orca_executable']
+
+    # Write SLURM script to a file named '{job_name}.slurm'
+    slurm_script = f'{job_name}.slurm'
+    with open(slurm_script, 'w') as f:
+        # SLURM directives
+        f.write('#!/bin/bash\n')
+        f.write('#SBATCH --export=ALL\n')
+        f.write(f'#SBATCH --job-name={job_name}\n')
+        # Redirect both stdout and stderr to error_file
+        f.write(f'#SBATCH --output={error_file}\n')
+        f.write(f'#SBATCH --error={error_file}\n')
+
+        # Partition setting
+        f.write(f'#SBATCH --partition={args.partition}\n')
+        #f.write(f'#SBATCH --exclude=compute-2-07-[01-02]\n')
+
+        # Resource allocation
+        f.write(f'#SBATCH --nodes=1\n')
+        f.write(f'#SBATCH --ntasks={cpus}\n')
+        f.write(f'#SBATCH --cpus-per-task=1\n')
+
+        # Memory per CPU
+        f.write(f'#SBATCH --mem-per-cpu=4000\n')
+
+        # Walltime
+        f.write(f'#SBATCH --time={args.walltime}\n')
+
+        # Node and exclude settings
+        if args.node:
+            f.write(f'#SBATCH --nodelist={args.node}\n')
+        if args.exclude:
+            f.write(f'#SBATCH --exclude={args.exclude}\n')
+
+        f.write('\n# Load modules\n')
+        f.write('module purge\n')
+        for cmd in module_load_commands:
+            f.write(f'{cmd}\n')
+
+        f.write('\n# Set scratch directory\n')
+        f.write('export ORIG=$PWD\n')
+        f.write('export SCRATCH=/home/$USER/scratch\n')
+        f.write('timestamp=$(date +%Y%m%d%H%M%S)\n')
+        f.write('random_str=$(tr -dc a-z0-9 </dev/urandom | head -c 8)\n')
+        if args.scratch:
+            f.write(f'export SCRATCH_DIR={args.scratch}\n')
+        else:
+            f.write('export SCRATCH_DIR=$SCRATCH/orca_${SLURM_JOB_ID}_${timestamp}_${random_str}\n')
+        f.write('mkdir -p $SCRATCH_DIR || { echo "Error: Failed to create scratch directory"; exit 1; }\n')
+        f.write('echo "SCRATCH_DIR is set to $SCRATCH_DIR"\n')
+
+        f.write('\n# Copy input file to scratch directory\n')
+        f.write(f'cp {input_file} $SCRATCH_DIR/ || {{ echo "Error: Failed to copy input file"; exit 1; }}\n')
+
+        f.write('\n# Change to scratch directory\n')
+        f.write('cd $SCRATCH_DIR || { echo "Error: Failed to change directory"; exit 1; }\n')
+
+        f.write('\n# Start ORCA job\n')
+        f.write('echo "Starting ORCA job at $(date)"\n')
+        f.write('start_time=$(date +%s)\n')
+
+        f.write('\n# Run ORCA job\n')
+        f.write('export OMPI_MCA_btl="^openib"\n')  # Avoid OpenIB errors
+        f.write('export UCX_NET_DEVICES=all\n')      # UCX settings
+        f.write('export UCX_TLS=sm,self,shm\n')
+        f.write('export OMP_NUM_THREADS=1\n')
+        f.write('\n')
+        f.write(f'{orca_executable} {os.path.basename(input_file)} > $ORIG/{output_file} || '
+                '{ echo "Error: ORCA execution failed."; exit 1; }\n')
+
+        f.write('\n# Record end time\n')
+        f.write('end_time=$(date +%s)\n')
+        f.write('elapsed=$((end_time - start_time))\n')
+        f.write('echo "ORCA job finished at $(date)"\n')
+        f.write('echo "Elapsed time: $elapsed seconds"\n')
+
+        f.write('\n# Copy output files back to submit directory\n')
+        if args.save_all:
+            f.write('cp -R * $ORIG/ || { echo "Error: Failed to copy files back"; exit 1; }\n')
+        else:
+            f.write('for file in *.xyz *.out *.hess *.gbw; do\n')
+            f.write('  if [ -f "$file" ]; then\n')
+            f.write('    cp "$file" $ORIG/ || { echo "Error: Failed to copy $file"; exit 1; }\n')
+            f.write('  fi\n')
+            f.write('done\n')
+
+        # Clean up scratch directory
+        if not args.save_scratch:
+            f.write('\n# Clean up scratch directory\n')
+            f.write('rm -rf $SCRATCH_DIR || { echo "Warning: Failed to remove scratch directory"; }\n')
+        else:
+            f.write('echo "Not deleting scratch directory due to --save-scratch option"\n')
+
+    if args.dryrun:
+        print(f"Dry run: SLURM script written to {slurm_script}")
+    else:
+        # Submit the job
+        cmd = ['sbatch', slurm_script]
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    universal_newlines=True, check=True)
+            # Parse job ID from output
+            job_id = None
+            for line in result.stdout.strip().split('\n'):
+                if 'Submitted batch job' in line:
+                    job_id = line.strip().split()[-1]
+                    break
+            if job_id:
+                print(f'Submitted job {job_id}')
+            else:
+                print('Error: Failed to parse job ID from sbatch output.', file=sys.stderr)
+                sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: Failed to submit job. sbatch returned an error:\n{e.stderr}", file=sys.stderr)
+            sys.exit(1)
+
+        if not args.save_slurm:
+            # Clean up the SLURM script
+            os.remove(slurm_script)
+
+
+if __name__ == '__main__':
+    main()
