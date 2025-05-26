@@ -731,8 +731,6 @@ def generate_slurm_script(
             'mkdir -p $SCRATCH_DIR || { echo "Error: Failed to create '
             'scratch directory $SCRATCH_DIR"; exit 1; }\n'
         )
-        f.write('echo "SCRATCH_DIR is set to $SCRATCH_DIR"\n')
-
         f.write('\n# Copy input file to scratch directory\n')
         f.write(
             f'cp {input_path} $SCRATCH_DIR/ || '
@@ -754,10 +752,11 @@ def generate_slurm_script(
         )
 
         f.write('\n# Start ORCA job\n')
-        f.write('echo "Starting ORCA job at $(date)"\n')
+        f.write('echo "Starting ORCA job with SLURM job ID: $SLURM_JOB_ID"\n')
         f.write('echo "Running on host $(hostname)"\n')
         f.write('echo "Time is $(date)"\n')
-        f.write('echo "Directory is $(pwd)"\n')
+        f.write('echo "Directory is $ORIG"\n')
+        f.write('echo "SCRATCH_DIR is set to $SCRATCH_DIR"\n')
         f.write('echo "Cluster: $CLUSTER_NAME"\n')
         f.write('start_time=$(date +%s)\n')
 
