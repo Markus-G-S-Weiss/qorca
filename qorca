@@ -11,40 +11,81 @@ Usage:
 Author:
     Markus G. S. Weiss
 Date:
-    2024-11-21
+    2025-03-10
 """
 
 import argparse
+from os import environ
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# Define ORCA version settings for easy modification
-ORCA_VERSIONS = {
-    '5.0.4': {
-        'module_loads': [
-            'module load gnu9/9.4.0',
-            'module load openmpi4/4.1.1',
-            'module load orca/5.0.4',
-        ],
-        'orca_executable': '/opt/ohpc/pub/apps/orca/5.0.4/orca',
+# Define cluster-specific configurations
+CLUSTER_CONFIGS = {
+    "g2": {
+        "default_partition": "sterling",
+        "mem_per_cpu": 4000,  # MB
+        "default_time": "7-00:00:00",  # 7 days
+        "exclude_nodes": {
+            "sterling": ["compute-2-09-05"],  # GPU node(s) to exclude for sterling partition
+            # Add other partitions here if needed
+        },
+        "orca_versions": {
+            '5.0.4': {
+                'module_loads': [
+                    'module load gnu9/9.4.0',
+                    'module load openmpi4/4.1.1',
+                    'module load orca/5.0.4',
+                ],
+                'orca_executable': '/opt/ohpc/pub/apps/orca/5.0.4/orca',
+            },
+            '6.0.0': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                ],
+                'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_0/orca',
+            },
+            '6.0.1': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                ],
+                'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_1_avx2/orca',
+            },
+        }
     },
-    '6.0.0': {
-        'module_loads': [
-            'module load gnu12/12.4.0',
-            'module load openmpi4/4.1.6',
-        ],
-        'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_0/orca',
-    },
-    '6.0.1': {
-        'module_loads': [
-            'module load gnu12/12.4.0',
-            'module load openmpi4/4.1.6',
-        ],
-        'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_1_avx2/orca',
-    },
-    # Add more versions as needed
+    "juno": {
+        "default_partition": "normal",
+        "mem_per_cpu": 3000,  # MB
+        "default_time": "2-00:00:00",  # 2 days
+        "exclude_nodes": {},
+        "orca_versions": {
+            '6.0.0': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                ],
+                'orca_executable': '/groups/sterling/software-tools/orca/orca_6_0_0/orca',
+            },
+            '6.0.1': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                ],
+                'orca_executable': '/groups/sterling/software-tools/orca/orca_6_0_1_avx2/orca',
+            },
+            'module_6.0.1': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                    'module load orca/6.0.1',
+                ],
+                'orca_executable': '/opt/ohpc/pub/apps/orca/6.0.1/orca',
+            },
+        }
+    }
 }
 
 
@@ -53,8 +94,13 @@ def parse_arguments():
     Parse command-line arguments.
 
     Returns:
-        argparse.Namespace: Parsed command-line arguments.
+        argparse.Namespace, str: Parsed command-line arguments and cluster name.
     """
+    # Detect cluster for setting defaults
+    cluster_name, cluster_config = detect_cluster()
+    default_partition = cluster_config["default_partition"]
+    default_time = cluster_config["default_time"]
+    
     parser = argparse.ArgumentParser(description='Submit ORCA job to SLURM')
     parser.add_argument('input_file', help='ORCA input file')
 
@@ -72,12 +118,12 @@ def parse_arguments():
         help='Set or overwrite the %%maxcore value in ORCA input file (in GB per core)'
     )
     parser.add_argument(
-        '-t', '--time', dest='walltime', default='7-00:00:00',
-        help='Wall time in SLURM format (default: 7-00:00:00)'
+        '-t', '--time', dest='walltime', default=default_time,
+        help=f'Wall time in SLURM format (default: {default_time})'
     )
     parser.add_argument(
-        '--partition', '-q', default='sterling',
-        help='Partition name (default: sterling)'
+        '--partition', '-q', default=default_partition,
+        help=f'Partition name (default: {default_partition})'
     )
     parser.add_argument(
         '--name', '-n', dest='job_name',
@@ -128,8 +174,77 @@ def parse_arguments():
     )
 
     args = parser.parse_args()
-    return args
+    return args, cluster_name
 
+
+def detect_cluster():
+    """
+    Detect which cluster the script is running on.
+    
+    Detection hierarchy:
+    1. CLUSTER_NAME environment variable
+    2. SLURM's ClusterName configuration
+    3. Fall back to default (g2)
+    
+    When determined via scontrol, exports CLUSTER_NAME to environment.
+    
+    Returns:
+        tuple: (cluster_name, cluster_config)
+    """    
+    # Mapping of possible SLURM cluster names to our config keys
+    cluster_mapping = {
+        'g2': 'g2',
+        'juno': 'juno',
+        # Add more mappings if SLURM cluster names differ from config keys
+    }
+    
+    # Step 1: Check environment variable first
+    env_cluster_name = environ.get("CLUSTER_NAME", "").lower()
+    if env_cluster_name:
+        # Apply mapping if needed
+        mapped_name = cluster_mapping.get(env_cluster_name, env_cluster_name)
+        if mapped_name in CLUSTER_CONFIGS:
+            return mapped_name, CLUSTER_CONFIGS[mapped_name]
+        else:
+            print(f"Warning: Environment variable CLUSTER_NAME='{env_cluster_name}' doesn't match any known cluster", 
+                  file=sys.stderr)
+    
+    # Step 2: Try SLURM config if environment variable not set or invalid
+    try:
+        result = subprocess.run(
+            ['scontrol', 'show', 'config'], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=5
+        )
+        
+        # Find ClusterName in output
+        for line in result.stdout.split('\n'):
+            if line.strip().startswith('ClusterName'):
+                slurm_cluster_name = line.split('=')[1].strip().lower()
+                # Map the detected name
+                mapped_name = cluster_mapping.get(slurm_cluster_name, slurm_cluster_name)
+                
+                if mapped_name in CLUSTER_CONFIGS:
+                    # Set the environment variable for this process
+                    environ["CLUSTER_NAME"] = mapped_name
+                    print(f"Detected SLURM cluster: {slurm_cluster_name} -> mapped to: {mapped_name}", file=sys.stderr)
+                    print(f"# For future runs, you can set: export CLUSTER_NAME={mapped_name}", file=sys.stderr)
+                    return mapped_name, CLUSTER_CONFIGS[mapped_name]
+                else:
+                    print(f"Warning: Detected SLURM cluster '{slurm_cluster_name}' doesn't map to a known configuration", 
+                          file=sys.stderr)
+                
+                break  # Exit loop after finding ClusterName line
+                
+    except (subprocess.SubprocessError, IndexError, TimeoutError) as e:
+        print(f"Warning: Could not determine cluster from SLURM config: {e}", file=sys.stderr)
+    
+    # Step 3: Fallback to default
+    print("Warning: Using default G2 cluster settings", file=sys.stderr)
+    return "g2", CLUSTER_CONFIGS["g2"]
 
 def read_input_file(input_path):
     """
@@ -364,7 +479,7 @@ def adjust_maxcore_in_input(lines, maxcore_value):
     return new_lines, changes_made
 
 
-def check_memory_requirements(maxcore_value, pal_value, cpus):
+def check_memory_requirements(maxcore_value, pal_value, cpus, mem_per_cpu):
     """
     Check if total ORCA memory exceeds total SLURM memory.
 
@@ -372,12 +487,13 @@ def check_memory_requirements(maxcore_value, pal_value, cpus):
         maxcore_value (int): Maxcore value in MB.
         pal_value (int): PAL value being used.
         cpus (int): Number of CPUs allocated in SLURM.
+        mem_per_cpu (int): Memory per CPU in MB.
 
     Raises:
         SystemExit: If total ORCA memory exceeds total SLURM memory.
     """
     total_orca_memory = maxcore_value * pal_value  # MB
-    total_slurm_memory = cpus * 4000  # MB (assuming --mem-per-cpu=4000)
+    total_slurm_memory = cpus * mem_per_cpu  # MB
 
     if total_orca_memory > total_slurm_memory:
         print(
@@ -393,7 +509,7 @@ def check_memory_requirements(maxcore_value, pal_value, cpus):
         sys.exit(1)
 
 
-def handle_maxcore(args, lines, pal_value, input_path):
+def handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu):
     """
     Handle maxcore adjustments in the input file.
 
@@ -402,6 +518,7 @@ def handle_maxcore(args, lines, pal_value, input_path):
         lines (list): Lines from the input file.
         pal_value (int): PAL value being used.
         input_path (Path): Path to the input file.
+        mem_per_cpu (int): Memory per CPU in MB.
 
     Returns:
         tuple: (int or None, updated lines from the input file)
@@ -414,7 +531,7 @@ def handle_maxcore(args, lines, pal_value, input_path):
         maxcore_value = int(args.maxcore * 1024 * 0.75)  # MB
 
         # Check if total ORCA memory exceeds total SLURM memory
-        check_memory_requirements(maxcore_value, pal_value, args.cpus)
+        check_memory_requirements(maxcore_value, pal_value, args.cpus, mem_per_cpu)
 
         # Adjust %maxcore in input file
         new_lines, changes_made = adjust_maxcore_in_input(lines, maxcore_value)
@@ -436,8 +553,8 @@ def handle_maxcore(args, lines, pal_value, input_path):
         if input_file_maxcore is not None:
             maxcore_value = input_file_maxcore
             # Check if total ORCA memory exceeds total SLURM memory
-            check_memory_requirements(maxcore_value, pal_value, args.cpus)
-            # No changes to input file; no message needed
+            check_memory_requirements(maxcore_value, pal_value, args.cpus, mem_per_cpu)
+        # No changes to input file; no message needed
         else:
             maxcore_value = None
             # No %maxcore set and no --maxcore provided; no message needed
@@ -489,36 +606,40 @@ def validate_resources(args, pal_value, force=False):
     return cpus
 
 
-def handle_version_settings(args):
+def handle_version_settings(args, cluster_name):
     """
     Retrieve ORCA version settings and return module load commands and executable path.
 
     Args:
         args (argparse.Namespace): Parsed command-line arguments.
+        cluster_name (str): Name of the cluster.
 
     Returns:
         tuple: (list of module load commands, str of ORCA executable path)
     """
     version = args.version
-    if version not in ORCA_VERSIONS:
+    cluster_config = CLUSTER_CONFIGS.get(cluster_name, CLUSTER_CONFIGS["g2"])
+    orca_versions = cluster_config["orca_versions"]
+    
+    if version not in orca_versions:
         print(
-            f"Error: ORCA version '{version}' is not recognized.",
+            f"Error: ORCA version '{version}' is not recognized for cluster '{cluster_name}'.",
             file=sys.stderr
         )
         print(
-            f"Available versions: {', '.join(ORCA_VERSIONS.keys())}",
+            f"Available versions for {cluster_name}: {', '.join(orca_versions.keys())}",
             file=sys.stderr
         )
         sys.exit(1)
 
-    version_info = ORCA_VERSIONS[version]
+    version_info = orca_versions[version]
     module_load_commands = version_info['module_loads']
     orca_executable = version_info['orca_executable']
     return module_load_commands, orca_executable
 
 
 def generate_slurm_script(
-        args, module_load_commands, orca_executable, input_path
+        args, module_load_commands, orca_executable, input_path, mem_per_cpu, cluster_name
         ):
     """
     Generate the SLURM script based on provided parameters.
@@ -528,6 +649,8 @@ def generate_slurm_script(
         module_load_commands (list): Module load commands.
         orca_executable (str): Path to the ORCA executable.
         input_path (Path): Path to the input file.
+        mem_per_cpu (int): Memory per CPU in MB.
+        cluster_name (str): Name of the cluster.
 
     Returns:
         str: Name of the generated SLURM script file.
@@ -540,6 +663,11 @@ def generate_slurm_script(
     slurm_script_path = Path(slurm_script)
     cpus = args.cpus
 
+    # Get node exclusion configuration from cluster config
+    cluster_config = CLUSTER_CONFIGS.get(cluster_name, CLUSTER_CONFIGS["g2"])
+    exclude_config = cluster_config.get("exclude_nodes", {})
+    partition_excludes = exclude_config.get(args.partition, [])
+    
     with slurm_script_path.open('w') as f:
         # SLURM directives
         f.write('#!/bin/bash\n')
@@ -555,8 +683,8 @@ def generate_slurm_script(
         f.write(f'#SBATCH --ntasks={cpus}\n')
         f.write('#SBATCH --cpus-per-task=1\n')
 
-        # Memory per CPU
-        f.write('#SBATCH --mem-per-cpu=4000\n')
+        # Memory per CPU - use cluster-specific value
+        f.write(f'#SBATCH --mem-per-cpu={mem_per_cpu}\n')
 
         # Walltime
         f.write(f'#SBATCH --time={args.walltime}\n')
@@ -564,9 +692,19 @@ def generate_slurm_script(
         # Node and exclude settings
         if args.node:
             f.write(f'#SBATCH --nodelist={args.node}\n')
-        if args.exclude:
-            f.write(f'#SBATCH --exclude={args.exclude}\n')
-
+        
+        # Handle node exclusions - combine user-specified excludes with config excludes
+        exclude_nodes = args.exclude
+        if partition_excludes:
+            config_excludes = ",".join(partition_excludes)
+            if exclude_nodes:
+                exclude_nodes = f"{exclude_nodes},{config_excludes}"
+            else:
+                exclude_nodes = config_excludes
+                
+        if exclude_nodes:
+            f.write(f'#SBATCH --exclude={exclude_nodes}\n')
+            
         f.write('\n# Load modules\n')
         f.write('module purge\n')
         for cmd in module_load_commands:
@@ -614,6 +752,10 @@ def generate_slurm_script(
 
         f.write('\n# Start ORCA job\n')
         f.write('echo "Starting ORCA job at $(date)"\n')
+        f.write('echo "Running on host $(hostname)"\n')
+        f.write('echo "Time is $(date)"\n')
+        f.write('echo "Directory is $(pwd)"\n')
+        f.write('echo "Cluster: $CLUSTER_NAME"\n')
         f.write('start_time=$(date +%s)\n')
 
         f.write('\n# Run ORCA job\n')
@@ -717,7 +859,12 @@ def submit_job(slurm_script, args):
 
 def main():
     """Main function to parse arguments and run the ORCA job submission."""
-    args = parse_arguments()
+    args, cluster_name = parse_arguments()
+    
+    # Get cluster config
+    _, cluster_config = detect_cluster()
+    mem_per_cpu = cluster_config["mem_per_cpu"]
+    
     input_path = Path(args.input_file)
     lines = read_input_file(input_path)
 
@@ -728,14 +875,14 @@ def main():
     args.cpus = validate_resources(args, pal_value, force=args.force)
 
     # Handle maxcore adjustments
-    maxcore_value, lines = handle_maxcore(args, lines, pal_value, input_path)
+    maxcore_value, lines = handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu)
 
     # Retrieve ORCA version settings
-    module_load_commands, orca_executable = handle_version_settings(args)
+    module_load_commands, orca_executable = handle_version_settings(args, cluster_name)
 
     # Generate SLURM script
     slurm_script = generate_slurm_script(
-        args, module_load_commands, orca_executable, input_path
+        args, module_load_commands, orca_executable, input_path, mem_per_cpu, cluster_name
     )
 
     # Submit the job
