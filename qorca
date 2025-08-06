@@ -761,7 +761,7 @@ def generate_slurm_script(
         f.write('start_time=$(date +%s)\n')
 
         f.write('\n# Run ORCA job\n')
-        f.write('export OMP_NUM_THREADS=1\n')
+        f.write('export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK\n')
         f.write('\n')
         f.write(
             f'{orca_executable} {input_path.name} > $ORIG/{output_file} '
