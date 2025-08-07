@@ -59,7 +59,7 @@ CLUSTER_CONFIGS = {
                 'module_loads': [
                     'module load gnu12/12.4.0',
                     'module load openmpi4/4.1.6',
-                ],  
+                ],
                 'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_1_0_avx2/orca',
             },
         }
