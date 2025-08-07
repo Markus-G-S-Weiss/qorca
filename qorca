@@ -55,6 +55,13 @@ CLUSTER_CONFIGS = {
                 ],
                 'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_0_1_avx2/orca',
             },
+            '6.1.0': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                ],  
+                'orca_executable': '/mfs/io/groups/sterling/software-tools/orca/orca_6_1_0_avx2/orca',
+            },
         }
     },
     "juno": {
@@ -85,6 +92,13 @@ CLUSTER_CONFIGS = {
                     'module load orca/6.0.1',
                 ],
                 'orca_executable': '/opt/ohpc/pub/apps/orca/6.0.1/orca',
+            },
+            '6.1.0': {
+                'module_loads': [
+                    'module load gnu12/12.4.0',
+                    'module load openmpi4/4.1.6',
+                ],
+                'orca_executable': '/groups/sterling/software-tools/orca/orca_6_1_0_avx2/orca',
             },
         }
     }
