@@ -29,7 +29,7 @@ CLUSTER_CONFIGS = {
         "default_time": "7-00:00:00",  # 7 days
         "scratch_base_dir": "/scratch/ganymede2/$USER",  # Base directory for scratch files
         "exclude_nodes": {
-            "sterling": ["compute-2-09-05"],  # GPU node(s) to exclude for sterling partition
+            "sterling": ["g-07-02"],  # GPU node(s) to exclude for sterling partition
             # Add other partitions here if needed
         },
         "orca_versions": {
