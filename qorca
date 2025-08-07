@@ -570,7 +570,7 @@ def handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu):
             maxcore_value = input_file_maxcore
             # Check if total ORCA memory exceeds total SLURM memory
             check_memory_requirements(maxcore_value, pal_value, args.cpus, mem_per_cpu)
-        # No changes to input file; no message needed
+            # No changes to input file; no message needed
         else:
             maxcore_value = None
             # No %maxcore set and no --maxcore provided; no message needed
