@@ -11,7 +11,7 @@ Usage:
 Author:
     Markus G. S. Weiss
 Date:
-    2025-03-10
+    2025-09-27
 """
 
 import argparse
@@ -121,71 +121,82 @@ def parse_arguments():
     parser.add_argument('input_file', help='ORCA input file')
 
     # Optional arguments
+
     parser.add_argument(
-        '-c', '--cpus', type=int,
-        help='Number of CPUs to allocate in SLURM (default: matches PAL value)'
-    )
-    parser.add_argument(
-        '-p', '--pal', type=int,
+        '-p', '--pal', type=int, 
         help='Number of processes (PAL value) to set in ORCA input file'
     )
     parser.add_argument(
-        '-m', '--maxcore', type=int,
+        '--tasks', type=int, 
+        help='Number of tasks to allocate in SLURM (default: matches PAL value)'
+    )
+    parser.add_argument(
+        '-c', '--cpus', type=int, default=1,
+        help='Number of CPUs per task (default: 1)'
+    )
+    parser.add_argument(
+        '-M', '--mem-per-cpu', type=int,
+        help='Memory per CPU in MB (default: cluster-specific value)'
+    )
+    parser.add_argument(
+        '-m', '--maxcore', type=int, 
         help='Set or overwrite the %%maxcore value in ORCA input file (in GB per core)'
     )
     parser.add_argument(
-        '-t', '--time', dest='walltime', default=default_time,
+        '-t', '--time', dest='walltime', default=default_time, 
         help=f'Wall time in SLURM format (default: {default_time})'
     )
     parser.add_argument(
-        '--partition', '-q', default=default_partition,
+        '--partition', '-q', default=default_partition, 
         help=f'Partition name (default: {default_partition})'
     )
     parser.add_argument(
-        '--name', '-n', dest='job_name',
+        '--name', '-n', dest='job_name', 
         help='Specifies the name of the job (default: input file name)'
     )
     parser.add_argument(
-        '--output', '-o',
+        '--output', '-o', 
         help='Output file name (default: input file with .out extension)'
     )
     parser.add_argument(
-        '--error', '-e',
+        '--error', '-e', 
         help='Error file name (default: input file with .err extension)'
     )
     parser.add_argument(
-        '--scratch', '-s', type=str,
+        '--scratch', '-s', type=str, 
         help='Specify scratch directory name (default: unique name generated under base scratch directory)'
     )
     parser.add_argument(
-        '--dryrun', '-d', action='store_true', default=False,
+        '--dryrun', '-d', action='store_true', default=False, 
         help='Just creates the script file rather than running it'
     )
     parser.add_argument(
-        '--save-scratch', action='store_true',
+        '--save-scratch', action='store_true', 
         help='Do not delete the scratch directory after completion'
     )
     parser.add_argument(
-        '--node', '-N', dest='node', help='Node to submit the job to'
+        '--node', '-N', dest='nodename', 
+        help='Node to submit the job to'
     )
     parser.add_argument(
-        '--exclude', '-x', help='Nodes to exclude (comma-separated list)'
+        '--exclude', '-x', 
+        help='Nodes to exclude (comma-separated list)'
     )
     parser.add_argument(
-        '--force', '-F', action='store_true',
+        '--force', '-F', action='store_true', 
         help='Proceed even if there are mismatches between specified and input file values'
     )
     parser.add_argument(
-        '--version', '-v', type=str,
-        default='6.0.1',
+        '--version', '-v', type=str, 
+        default='6.0.1', 
         help='ORCA version to use (e.g., 5.0.4, 6.0.0, 6.0.1) (default: 6.0.1)'
     )
     parser.add_argument(
-        '--save-all', '-f', action='store_true',
+        '--save-all', '-f', action='store_true', 
         help='Copy all files from scratch directory back to working directory'
     )
     parser.add_argument(
-        '--save-slurm', '-k', action='store_true',
+        '--save-slurm', '-k', action='store_true', 
         help='Do not remove SLURM script from current directory'
     )
 
@@ -495,21 +506,23 @@ def adjust_maxcore_in_input(lines, maxcore_value):
     return new_lines, changes_made
 
 
-def check_memory_requirements(maxcore_value, pal_value, cpus, mem_per_cpu):
+def check_memory_requirements(maxcore_value, pal_value, tasks, cpus_per_task, mem_per_cpu):
     """
     Check if total ORCA memory exceeds total SLURM memory.
 
     Args:
         maxcore_value (int): Maxcore value in MB.
         pal_value (int): PAL value being used.
-        cpus (int): Number of CPUs allocated in SLURM.
+        tasks (int): Number of tasks allocated in SLURM.
+        cpus_per_task (int): Number of CPUs per task.
         mem_per_cpu (int): Memory per CPU in MB.
 
     Raises:
         SystemExit: If total ORCA memory exceeds total SLURM memory.
     """
     total_orca_memory = maxcore_value * pal_value  # MB
-    total_slurm_memory = cpus * mem_per_cpu  # MB
+    total_slurm_memory = tasks * cpus_per_task * mem_per_cpu  # MB
+    memory_usage_percent = (total_orca_memory / total_slurm_memory) * 100
 
     if total_orca_memory > total_slurm_memory:
         print(
@@ -518,11 +531,21 @@ def check_memory_requirements(maxcore_value, pal_value, cpus, mem_per_cpu):
             file=sys.stderr
         )
         print(
-            "Adjust '--maxcore', number of CPUs/PAL, or %maxcore in input file to ensure total "
+            "Adjust '--maxcore', number of tasks/cpus-per-task/PAL, or %maxcore in input file to ensure total "
             "ORCA memory does not exceed total SLURM memory.",
             file=sys.stderr
         )
         sys.exit(1)
+    elif memory_usage_percent > 75.0:
+        print(
+            f"Warning: ORCA memory usage ({total_orca_memory} MB, {memory_usage_percent:.1f}%) "
+            f"exceeds 75% of allocated SLURM memory ({total_slurm_memory} MB).",
+            file=sys.stderr
+        )
+        print(
+            "Consider increasing memory allocation or reducing '--maxcore' to avoid potential memory issues.",
+            file=sys.stderr
+        )
 
 
 def handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu):
@@ -547,7 +570,7 @@ def handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu):
         maxcore_value = int(args.maxcore * 1024 * 0.75)  # MB
 
         # Check if total ORCA memory exceeds total SLURM memory
-        check_memory_requirements(maxcore_value, pal_value, args.cpus, mem_per_cpu)
+        check_memory_requirements(maxcore_value, pal_value, args.tasks, args.cpus, mem_per_cpu)
 
         # Adjust %maxcore in input file
         new_lines, changes_made = adjust_maxcore_in_input(lines, maxcore_value)
@@ -569,7 +592,7 @@ def handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu):
         if input_file_maxcore is not None:
             maxcore_value = input_file_maxcore
             # Check if total ORCA memory exceeds total SLURM memory
-            check_memory_requirements(maxcore_value, pal_value, args.cpus, mem_per_cpu)
+            check_memory_requirements(maxcore_value, pal_value, args.tasks, args.cpus, mem_per_cpu)
             # No changes to input file; no message needed
         else:
             maxcore_value = None
@@ -580,7 +603,7 @@ def handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu):
 
 def validate_resources(args, pal_value, force=False):
     """
-    Validate resource allocation between PAL value and CPUs.
+    Validate resource allocation between PAL value and tasks.
 
     Args:
         args (argparse.Namespace): Parsed command-line arguments.
@@ -588,22 +611,22 @@ def validate_resources(args, pal_value, force=False):
         force (bool, optional): Proceed despite mismatches if True.
 
     Returns:
-        int: Number of CPUs to allocate in SLURM.
+        int: Number of tasks to allocate in SLURM.
 
     Raises:
         SystemExit: If mismatches are found and not forced.
     """
-    cpus = args.cpus if args.cpus is not None else pal_value
+    tasks = args.tasks if args.tasks is not None else pal_value
     errors = []
 
-    if pal_value != cpus:
+    if pal_value != tasks:
         errors.append(
-            f"Number of CPUs ({cpus}) does not match PAL value ({pal_value})."
+            f"Number of tasks ({tasks}) does not match PAL value ({pal_value})."
         )
 
     if errors and not force:
         print(
-            "Error: Mismatch detected between specified CPUs and PAL value:",
+            "Error: Mismatch detected between specified tasks and PAL value:",
             file=sys.stderr
         )
         for error in errors:
@@ -619,7 +642,7 @@ def validate_resources(args, pal_value, force=False):
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
 
-    return cpus
+    return tasks
 
 
 def handle_version_settings(args, cluster_name):
@@ -677,7 +700,7 @@ def generate_slurm_script(
 
     slurm_script = f'{job_name}.slurm'
     slurm_script_path = Path(slurm_script)
-    cpus = args.cpus
+    tasks = args.tasks
 
     # Get configuration from cluster config
     cluster_config = CLUSTER_CONFIGS.get(cluster_name, CLUSTER_CONFIGS["g2"])
@@ -697,8 +720,8 @@ def generate_slurm_script(
         f.write(f'#SBATCH --partition={args.partition}\n')
         # Resource allocation
         f.write('#SBATCH --nodes=1\n')
-        f.write(f'#SBATCH --ntasks={cpus}\n')
-        f.write('#SBATCH --cpus-per-task=1\n')
+        f.write(f'#SBATCH --ntasks={tasks}\n')
+        f.write(f'#SBATCH --cpus-per-task={args.cpus}\n')
 
         # Memory per CPU - use cluster-specific value
         f.write(f'#SBATCH --mem-per-cpu={mem_per_cpu}\n')
@@ -707,8 +730,8 @@ def generate_slurm_script(
         f.write(f'#SBATCH --time={args.walltime}\n')
 
         # Node and exclude settings
-        if args.node:
-            f.write(f'#SBATCH --nodelist={args.node}\n')
+        if args.nodename:
+            f.write(f'#SBATCH --nodelist={args.nodename}\n')
         
         # Handle node exclusions - combine user-specified excludes with config excludes
         exclude_nodes = args.exclude
@@ -772,11 +795,14 @@ def generate_slurm_script(
         f.write('echo "Directory is $ORIG"\n')
         f.write('echo "SCRATCH_DIR is set to $SCRATCH_DIR"\n')
         f.write('echo "Cluster: $CLUSTER_NAME"\n')
+        f.write('\n# Record start time\n')
         f.write('start_time=$(date +%s)\n')
 
         f.write('\n# Run ORCA job\n')
         f.write('export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK\n')
+        f.write(f'echo $PWD\n')
         f.write('\n')
+        # Run ORCA command
         f.write(
             f'{orca_executable} {input_path.name} > $ORIG/{output_file} '
             '|| { echo "Error: ORCA execution failed."; exit 1; }\n'
@@ -879,7 +905,8 @@ def main():
     
     # Get cluster config
     _, cluster_config = detect_cluster()
-    mem_per_cpu = cluster_config["mem_per_cpu"]
+    # Use user-provided mem-per-cpu if specified, otherwise use cluster default
+    mem_per_cpu = getattr(args, 'mem_per_cpu', None) or cluster_config["mem_per_cpu"]
     
     input_path = Path(args.input_file)
     lines = read_input_file(input_path)
@@ -887,8 +914,8 @@ def main():
     # Handle PAL adjustments
     pal_value, lines = handle_pal(args, lines, input_path)
 
-    # Validate resources and set CPUs
-    args.cpus = validate_resources(args, pal_value, force=args.force)
+    # Validate resources and set tasks
+    args.tasks = validate_resources(args, pal_value, force=args.force)
 
     # Handle maxcore adjustments
     maxcore_value, lines = handle_maxcore(args, lines, pal_value, input_path, mem_per_cpu)
