@@ -203,7 +203,7 @@ def parse_arguments():
     parser.add_argument(
         '--version', '-v', type=str, 
         default='6.0.1', 
-        help='ORCA version to use (e.g., 5.0.4, 6.0.0, 6.0.1) (default: 6.0.1)'
+        help='ORCA version to use (e.g., 5.0.4, 6.0.0, 6.0.1, 6.1.1) (default: 6.0.1)'
     )
     parser.add_argument(
         '--save-all', '-f', action='store_true', 
