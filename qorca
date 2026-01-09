@@ -836,7 +836,7 @@ def generate_slurm_script(
             )
         else:
             f.write(
-                'for file in *.xyz *.pot *.gbw *.out *.hess; do\n'
+                'for file in *.xyz *.pot *.gbw *.out *.hess *txt; do\n'
                 '  if [ -f "$file" ]; then\n'
                 '    cp "$file" $ORIG/ || { echo "Error: Failed to '
                 'copy $file"; exit 1; }\n'
